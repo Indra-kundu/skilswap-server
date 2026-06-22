@@ -1,17 +1,23 @@
 const express = require("express");
 const dontenv = require("dotenv");
 const cors = require("cors");
-
-
 const { MongoClient, ServerApiVersion } = require('mongodb');
 dontenv.config();
 
 const uri = process.env.MONGODB_URI;
 const app = express();
 const PORT = process.env.PORT;
-
 app.use(cors())
+
+app.use(
+    cors({
+        credentials: true,
+        origin: [process.env.CLIENT_URL],
+    }),
+);
+
 app.use(express.json());
+
 
 
 const client = new MongoClient(uri, {
@@ -27,12 +33,10 @@ async function run() {
         await client.connect();
         const db = client.db("skillswap");
 
-
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
-        // Ensures that the client will close when you finish/error
-        // await client.close();
+
     }
 }
 run().catch(console.dir);
