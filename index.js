@@ -1,13 +1,16 @@
 const express = require("express");
 const dontenv = require("dotenv");
+dontenv.config();
+
+const stripePackage = require('stripe');
+const app = express();
+const stripe = stripePackage(process.env.STRIPE_SECRET_KEY);
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 const { ObjectId } = require('mongodb'); // এটি অবশ্যই ইমপোর্ট থাকতে হবে
-dontenv.config();
 
 const uri = process.env.MONGODB_URI;
-const app = express();
 const PORT = process.env.PORT;
 app.use(cors())
 
@@ -87,6 +90,7 @@ async function run() {
 
         const tasksCollection = db.collection("tasks")
         const proposalsCollection = db.collection("proposals");
+        const paymentsCollection = db.collection("payments"); // এটি নতুন যোগ করুন
 
         app.get("/client/tasks/:email", async (req, res) => {
             const email = req.params.email; // যে ক্লায়েন্ট লগইন আছে তার ইমেইল
@@ -154,7 +158,15 @@ async function run() {
             }
         });
 
-
+        app.patch("/proposals/:id", async (req, res) => {
+            const id = req.params.id;
+            const { status } = req.body;
+            const result = await proposalsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status: status } }
+            );
+            res.send(result);
+        });
         // index.js বা আপনার মেইন সার্ভার ফাইলে এটি থাকতে হবে
         app.post("/proposals", async (req, res) => {
             const proposal = req.body;
@@ -170,6 +182,62 @@ async function run() {
             res.send(proposals);
         });
 
+        // ১. পেমেন্ট সেশন তৈরির রাউট (Stripe-এর জন্য)
+        app.post("/create-checkout-session", async (req, res) => {
+            const { price, proposalId, taskId } = req.body;
+
+            const session = await stripe.checkout.sessions.create({
+                payment_method_types: ['card'],
+                line_items: [{
+                    price_data: {
+                        currency: 'usd',
+                        product_data: { name: 'Task Payment' },
+                        unit_amount: Math.round(price * 100),
+                    },
+                    quantity: 1,
+                }],
+                mode: 'payment',
+                // পেমেন্ট সফল হলে ইউজার আপনার সাকসেস পেজে ফিরে আসবে
+                success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}&proposal_id=${proposalId}&task_id=${taskId}`,
+                cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+            });
+
+            res.send({ url: session.url });
+        });
+
+        // ২. পেমেন্ট সফল হওয়ার পর স্ট্যাটাস আপডেটের রাউট
+        app.patch("/confirm-session", async (req, res) => {
+            const { proposalId, taskId, sessionId } = req.body;
+
+            // ১. প্রপোজাল স্ট্যাটাস 'Accepted' করা
+            await proposalsCollection.updateOne(
+                { _id: new ObjectId(proposalId) },
+                { $set: { status: "Accepted" } }
+            );
+
+            // ২. টাস্ক স্ট্যাটাস 'In Progress' করা
+            await tasksCollection.updateOne(
+                { _id: new ObjectId(taskId) },
+                { $set: { status: "In Progress" } }
+            );
+
+            // ৩. ঐ টাস্কের বাকি সব প্রপোজাল 'Rejected' করা
+            await proposalsCollection.updateMany(
+                { task_id: taskId, _id: { $ne: new ObjectId(proposalId) } },
+                { $set: { status: "Rejected" } }
+            );
+
+            // ৪. পেমেন্ট কালেকশনে ডাটা সেভ করা (আপনার নতুন রিকোয়ারমেন্ট)
+            await paymentsCollection.insertOne({
+                proposal_id: new ObjectId(proposalId),
+                task_id: new ObjectId(taskId),
+                session_id: sessionId, // নতুন যোগ করা
+                payment_status: "Paid",
+                paid_at: new Date()
+            });
+            const task = await tasksCollection.findOne({ _id: new ObjectId(taskId) });
+            res.send({ success: true, taskTitle: task.title, price: task.budget });
+        });
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
