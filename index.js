@@ -56,7 +56,6 @@ const verifyToken = async (req, res, next) => {
         console.log(error);
         return res.status(403).json({ message: "Forbidden" });
     }
-    next()
 
 };
 
@@ -66,26 +65,30 @@ const verifyClient = async (req, res, next) => {
         return res.status(403).json({ message: "Forbidden" });
 
     }
-}
+    next(); // এটি অবশ্যই যোগ করুন
+};
 
-// const verifyFreelancer = async (req, res, next) => {
-//     const user = req.user;
-//     if (user.role !== "freelancer") {
-//         return res.status(403).json({ message: "Forbidden" });
+const verifyFreelancer = async (req, res, next) => {
+    const user = req.user;
+    if (user.role !== "freelancer") {
+        return res.status(403).json({ message: "Forbidden" });
 
-//     }
-// }
+    }
+    next(); // এটি অবশ্যই যোগ করুন!
+};
 
-// const verifyAdmin = async (req, res, next) => {
-//     const user = req.user;
-//     if (user.role !== "admin") {
-//         return res.status(403).json({ message: "Forbidden" });
+const verifyAdmin = async (req, res, next) => {
+    const user = req.user;
+    if (user.role !== "admin") {
+        return res.status(403).json({ message: "Forbidden" });
 
-//     }
-// }
+    }
+    next(); // এটি অবশ্যই যোগ করুন!
+};
+
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
         const db = client.db("skillswap");
 
         const tasksCollection = db.collection("tasks")
@@ -136,12 +139,154 @@ async function run() {
 
         app.get("/all-tasks", async (req, res) => {
             try {
-                const result = await tasksCollection.find().toArray();
+                // এখানে ফিল্টার হিসেবে { status: "Open" } যোগ করুন
+                const result = await tasksCollection.find({ status: "Open" }).toArray();
                 res.send(result);
             } catch (error) {
-                res.status(500).send({ message: "Error fetching all tasks" });
+                res.status(500).send({ message: "Error fetching open tasks" });
             }
         });
+
+        app.get("/open-tasks", async (req, res) => {
+            try {
+                // শুধুমাত্র ওপেন স্ট্যাটাসের টাস্কগুলো ফিল্টার করা হচ্ছে
+                const query = { status: "Open" };
+                const result = await tasksCollection.find(query).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Error fetching open tasks" });
+            }
+        });
+
+        // নিশ্চিত করুন এটি আছে (প্যারামিটার সহ)
+        app.get("/proposals/:email", async (req, res) => {
+            const email = req.params.email;
+            const result = await proposalsCollection.find({ freelancer_email: email }).toArray();
+            res.send(result);
+        });
+
+        app.put('/freelancer/update', async (req, res) => {
+            const { email, name, bio, skills } = req.body;
+            const result = await db.collection('freelancers').updateOne(
+                { email },
+                { $set: { name, bio, skills } }
+            );
+            res.send(result);
+        });
+
+        // ১. সব ইউজার পাওয়ার জন্য
+        app.get('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
+            const users = await db.collection("user").find().toArray();
+            res.send(users);
+        });
+
+        // ২. ব্লক বা আনব্লক করার জন্য (isBlocked ফিল্ড ব্যবহার করে)
+        app.patch('/admin/users/:id', async (req, res) => {
+            const id = req.params.id;
+            const { isBlocked } = req.body;
+            const filter = { _id: new require('mongodb').ObjectId(id) };
+            const updateDoc = { $set: { isBlocked: isBlocked } };
+
+            const result = await db.collection("user").updateOne(filter, updateDoc);
+            res.send(result);
+        });
+
+
+        // ১. সব টাস্ক দেখার জন্য
+        app.get('/tasks', async (req, res) => {
+            const tasks = await db.collection("tasks").find().toArray();
+            res.send(tasks);
+        });
+
+        // ২. টাস্ক ডিলিট করার জন্য
+        app.delete('/tasks/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new require('mongodb').ObjectId(id) };
+            const result = await db.collection("tasks").deleteOne(query);
+            res.send(result);
+        });
+
+
+        app.get('/admin/payments', async (req, res) => {
+            try {
+                const payments = await db.collection("payments").find().toArray();
+                res.send(payments);
+            } catch (error) {
+                res.status(500).send({ message: "Error fetching payments" });
+            }
+        });
+
+
+        // Admin Stats API
+        app.get('/admin-stats', async (req, res) => {
+            try {
+                // এখানে "user" কালেকশন ব্যবহার করুন (আপনার ডাটা ফরম্যাট অনুযায়ী)
+                const totalUsers = await db.collection("user").estimatedDocumentCount();
+
+                const totalTasks = await db.collection("tasks").estimatedDocumentCount();
+                const activeTasks = await db.collection("tasks").countDocuments({ status: "Open" });
+
+                const payments = await db.collection("payments").find().toArray();
+                const totalRevenue = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+
+                res.send({
+                    totalUsers,
+                    totalTasks,
+                    totalRevenue,
+                    activeTasks
+                });
+            } catch (error) {
+                res.status(500).send({ message: "Error" });
+            }
+        });
+
+
+
+        app.get('/client-stats', async (req, res) => {
+            const email = req.query.email;
+
+            // ডাটাবেস ফিল্ডের নাম এবং ভ্যালুর সাথে মিলিয়ে কুয়েরি আপডেট করা হলো
+            const query = { client_email: email };
+
+            try {
+                const totalTasks = await db.collection("tasks").countDocuments(query);
+
+                // ডাটাবেসে স্ট্যাটাস "Open" (বড় হাতের 'O') আছে
+                const openTasks = await db.collection("tasks").countDocuments({
+                    ...query,
+                    status: "Open"
+                });
+
+                const inProgress = await db.collection("tasks").countDocuments({
+                    ...query,
+                    status: "In Progress"
+                });
+
+                res.send({ totalTasks, openTasks, inProgress, totalSpent: 0 });
+            } catch (error) {
+                res.status(500).send({ message: "Error" });
+            }
+        });
+
+        app.get("/freelancers", async (req, res) => {
+            try {
+                // নিশ্চিত করুন 'users' কালেকশনটি সঠিক। 
+                // আপনার ডাটাবেস কি 'skillswap'? তাহলে কোডটি এমন হবে:
+                const freelancers = await db.collection("user").find({ role: "freelancer" }).toArray();
+                res.send(freelancers);
+            } catch (error) {
+                res.status(500).send({ message: "Error" });
+            }
+        });
+
+        app.get("/task-title/:id", async (req, res) => {
+            const id = req.params.id;
+            // আইডি ম্যাচ করার জন্য ObjectId ব্যবহার করুন
+            const query = { _id: new ObjectId(id) };
+            const task = await tasksCollection.findOne(query);
+            res.send({ title: task ? task.title : "Not Found" });
+        });
+
         app.get("/tasks/:id", async (req, res) => {
             try {
                 const id = req.params.id;
@@ -174,16 +319,56 @@ async function run() {
             res.send(result);
         });
 
+
+
         // সার্ভারের কোড
         app.get("/proposals/client/:email", async (req, res) => {
             const email = req.params.email;
-            // এখানে আপনি প্রপোজালগুলো খুঁজছেন যেখানে টাস্কের মালিকের ইমেইল আপনার সেশন ইমেইলের সাথে মেলে
-            const proposals = await proposalsCollection.find({ client_email: email }).toArray();
-            res.send(proposals);
+
+            try {
+                const proposals = await proposalsCollection.aggregate([
+                    { $match: { client_email: email, status: "Pending" } }, {
+                        $addFields: {
+                            task_id_obj: {
+                                $cond: {
+                                    if: { $eq: [{ $type: "$task_id" }, "string"] },
+                                    then: { $toObjectId: "$task_id" },
+                                    else: "$task_id"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "tasks",
+                            // এখানে ভুল ছিল: আপনাকে অবশ্যই 'task_id_obj' ব্যবহার করতে হবে
+                            localField: "task_id_obj",
+                            foreignField: "_id",
+                            as: "taskInfo"
+                        }
+                    },
+                    { $unwind: "$taskInfo" },
+                    {
+                        $project: {
+                            freelancer_name: 1,
+                            budget: 1,
+                            note: 1,
+                            status: 1,
+                            task_id: 1,
+                            task_title: "$taskInfo.title"
+                        }
+                    }
+                ]).toArray();
+
+                res.send(proposals);
+            } catch (error) {
+                console.error("Aggregation Error:", error);
+                res.status(500).send({ message: "Error fetching proposals" });
+            }
         });
 
         // ১. পেমেন্ট সেশন তৈরির রাউট (Stripe-এর জন্য)
-        app.post("/create-checkout-session", async (req, res) => {
+        app.post("/create-checkout-session", verifyToken, async (req, res) => {
             const { price, proposalId, taskId } = req.body;
 
             const session = await stripe.checkout.sessions.create({
@@ -206,40 +391,79 @@ async function run() {
         });
 
         // ২. পেমেন্ট সফল হওয়ার পর স্ট্যাটাস আপডেটের রাউট
-        app.patch("/confirm-session", async (req, res) => {
-            const { proposalId, taskId, sessionId } = req.body;
+        // index.js (ব্যাকএন্ড)
+        app.patch("/confirm-session", verifyToken, async (req, res) => {
+            try {
+                const { proposalId, taskId, sessionId } = req.body;
 
-            // ১. প্রপোজাল স্ট্যাটাস 'Accepted' করা
-            await proposalsCollection.updateOne(
-                { _id: new ObjectId(proposalId) },
-                { $set: { status: "Accepted" } }
-            );
+                // ১. লগ দিয়ে দেখুন ব্রাউজার কী পাঠাচ্ছে
+                console.log("RECEIVED DATA:", req.body);
 
-            // ২. টাস্ক স্ট্যাটাস 'In Progress' করা
-            await tasksCollection.updateOne(
-                { _id: new ObjectId(taskId) },
-                { $set: { status: "In Progress" } }
-            );
+                // ২. আইডিগুলো ভ্যালিড কিনা চেক করুন
+                if (!proposalId || !taskId || proposalId.length !== 24 || taskId.length !== 24) {
+                    console.error("INVALID ID FORMAT:", { proposalId, taskId });
+                    return res.status(400).send({ message: "Invalid ID length/format" });
+                }
 
-            // ৩. ঐ টাস্কের বাকি সব প্রপোজাল 'Rejected' করা
-            await proposalsCollection.updateMany(
-                { task_id: taskId, _id: { $ne: new ObjectId(proposalId) } },
-                { $set: { status: "Rejected" } }
-            );
+                const pId = new ObjectId(proposalId);
+                const tId = new ObjectId(taskId);
 
-            // ৪. পেমেন্ট কালেকশনে ডাটা সেভ করা (আপনার নতুন রিকোয়ারমেন্ট)
-            await paymentsCollection.insertOne({
-                proposal_id: new ObjectId(proposalId),
-                task_id: new ObjectId(taskId),
-                session_id: sessionId, // নতুন যোগ করা
-                payment_status: "Paid",
-                paid_at: new Date()
-            });
-            const task = await tasksCollection.findOne({ _id: new ObjectId(taskId) });
-            res.send({ success: true, taskTitle: task.title, price: task.budget });
+                // ৩. অপারেশন
+                await proposalsCollection.updateOne({ _id: pId }, { $set: { status: "Accepted" } });
+                await tasksCollection.updateOne({ _id: tId }, { $set: { status: "In Progress" } });
+
+                // অন্যান্য প্রপোজাল রিজেক্ট করা
+                await proposalsCollection.updateMany(
+                    { task_id: taskId, _id: { $ne: pId } },
+                    { $set: { status: "Rejected" } }
+                );
+
+                await paymentsCollection.insertOne({
+                    proposal_id: pId,
+                    task_id: tId,
+                    session_id: sessionId,
+                    payment_status: "Paid",
+                    paid_at: new Date()
+                });
+
+                res.send({ success: true, message: "Updated" });
+            } catch (error) {
+                console.error("CRITICAL BACKEND ERROR:", error);
+                res.status(500).send({ message: "Server Error", error: error.message });
+            }
         });
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
+        app.get("/proposals/check/:taskId", async (req, res) => {
+            try {
+                const taskId = req.params.taskId;
+                // ডাটাবেস থেকে চেক করা হচ্ছে কোনো 'Accepted' প্রপোজাল আছে কি না
+                const count = await proposalsCollection.countDocuments({
+                    task_id: taskId,
+                    status: "Accepted"
+                });
+                res.send({ hasApproved: count > 0 });
+            } catch (error) {
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        // ২. টাস্ক ডিলিট করার রাউট
+        app.delete("/tasks/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const query = { _id: new ObjectId(id) };
+                const result = await tasksCollection.deleteOne(query);
+
+                if (result.deletedCount === 1) {
+                    res.send({ success: true });
+                } else {
+                    res.status(404).send({ message: "Task not found" });
+                }
+            } catch (error) {
+                res.status(500).send({ message: "Delete failed" });
+            }
+        });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
 
     }
@@ -254,3 +478,4 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
+
